@@ -19,6 +19,11 @@
 <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/ShaderPass.js">
 <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/OutputPass.js">
 <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/utils/BufferGeometryUtils.js">
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js">
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/meshopt_decoder.module.js">
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/utils/SkeletonUtils.js">
+<link rel="preload" href="assets/Rogue_Hooded.glb" as="fetch" crossorigin>
+<link rel="preload" href="assets/env.glb" as="fetch" crossorigin>
 <style>
 :root{
   --ink:#efe4d0; --ink-dim:#a3967f; --gold:#d7b06a; --gold-dim:#7d6235; --ember:#ff8a2a; --ember-hot:#ffd27a; --blood:#e2394a; --frost:#8fd8ff;
@@ -463,6 +468,9 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 /* =====================================================================
    UTILS
@@ -828,7 +836,7 @@ function genFloor() {
   const S = 512, N = makeNoise(7), N2 = makeNoise(19), rr = mulberry32(42);
   const rows = 4, rowCuts = [];
   for (let r = 0; r < rows; r++) { const cuts = [0]; let x = 0; while (x < .78) { x += .22 + rr() * .3; if (x < .9) cuts.push(x); } const off = rr(); rowCuts.push({ cuts, off, shade: cuts.map(() => .78 + rr() * .3), tilt: cuts.map(() => [(rr() - .5) * .5, (rr() - .5) * .5]) }); }
-  const hgt = new Float32Array(S * S), alb = new Float32Array(S * S), rough = new Float32Array(S * S), emi = new Float32Array(S * S);
+  const hgt = new Float32Array(S * S), alb = new Float32Array(S * S), rough = new Float32Array(S * S), emi = new Float32Array(S * S), vn = new Float32Array(S * S);
   for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
     const u = x / S, v = y / S, r = Math.floor(v * rows), rc = rowCuts[r];
     const lu = (u + rc.off) % 1; let k = 0; for (let i = 0; i < rc.cuts.length; i++) if (lu >= rc.cuts[i]) k = i;
@@ -846,12 +854,13 @@ function genFloor() {
     alb[i] = bevel > .02 ? rc.shade[k] * (.55 + detail * .5) * (.75 + big * .45) - pits * .2 : .12 + detail * .08;
     rough[i] = clamp(.95 - Math.max(0, .42 - big) * 1.6, .25, 1) - (bevel < .2 ? 0 : .03);
     const vein = Math.max(0, 1 - Math.abs(N2(u * 1.3 + .5, v * 1.3, 6, 3) - .5) * 60);
-    emi[i] = (1 - bevel) * (.4 + detail * .6) + vein * bevel * .6;
+    emi[i] = (1 - bevel) * (.4 + detail * .6) + vein * bevel * .6; vn[i] = vein;
   }
   const A = canvasFrom(S, S, d => { for (let i = 0; i < S * S; i++) { const g = clamp(alb[i], 0, 1) * 255; d[i * 4] = g * 1.02; d[i * 4 + 1] = g; d[i * 4 + 2] = g * .96; d[i * 4 + 3] = 255; } });
   const R = canvasFrom(S, S, d => { for (let i = 0; i < S * S; i++) { const g = rough[i] * 255; d[i * 4] = g; d[i * 4 + 1] = g; d[i * 4 + 2] = g; d[i * 4 + 3] = 255; } });
   const E = canvasFrom(S, S, d => { for (let i = 0; i < S * S; i++) { const g = clamp(emi[i], 0, 1) * 255; d[i * 4] = g; d[i * 4 + 1] = g; d[i * 4 + 2] = g; d[i * 4 + 3] = 255; } });
-  return { map: tex(A, true), normal: tex(heightToNormal(hgt, S, S, 3.2), false), rough: tex(R, false), emi: tex(E, true) };
+  const V = canvasFrom(S, S, d => { for (let i = 0; i < S * S; i++) { const g = clamp(vn[i] * 1.3, 0, 1) * 255; d[i * 4] = g; d[i * 4 + 1] = g; d[i * 4 + 2] = g; d[i * 4 + 3] = 255; } });
+  return { map: tex(A, true), normal: tex(heightToNormal(hgt, S, S, 3.2), false), rough: tex(R, false), emi: tex(E, true), vein: tex(V, true) };
 }
 function genWall() {
   const W = 256, H = 384, N = makeNoise(3), rr = mulberry32(9), rows = 6, cols = 2;
@@ -936,18 +945,19 @@ function buildMaterials() {
    BIOMES
    ===================================================================== */
 const BIOMES = [
-  { name: 'Затопленные Катакомбы', sub: 'Ярус I', flavor: 'Здесь тьма впервые научилась дышать водой', bg: 0x06090b, fog: 0x07100f, fogD: .022, floor: 0x8e9a98, wall: 0x7a8686, hemiS: 0x2c4a52, hemiG: 0x080b0c, hemiI: 1.35, moon: 0x7aa4c4, accent: 0x3fe0d0, eye: 0x7ff6ff, vein: 0x1aa8a0, veinI: 0, enemy: 0x18222a, bullet: 0x5ff0ff, lift: [.96, 1.02, 1.04] },
-  { name: 'Пепельные Кузни', sub: 'Ярус II', flavor: 'Горны, что ковали цепи для солнца', bg: 0x0b0605, fog: 0x140806, fogD: .024, floor: 0x8a7a70, wall: 0x705c52, hemiS: 0x4a2a1c, hemiG: 0x0c0605, hemiI: 1.25, moon: 0xc48a6a, accent: 0xff6a1f, eye: 0xffb060, vein: 0xff5a10, veinI: 1.15, enemy: 0x2a1a16, bullet: 0xff7a2a, lift: [1.05, 1, .94] },
-  { name: 'Сердце Тьмы', sub: 'Ярус III', flavor: 'Там, где свет — лишь воспоминание', bg: 0x07050b, fog: 0x0c0714, fogD: .026, floor: 0x6e687a, wall: 0x50485f, hemiS: 0x34264a, hemiG: 0x08060c, hemiI: 1.2, moon: 0x9a7ad0, accent: 0xb05cff, eye: 0xd8a0ff, vein: 0x8a3cff, veinI: .5, enemy: 0x1e1428, bullet: 0xc77bff, lift: [1, .97, 1.06] },
+  { name: 'Затопленные Катакомбы', sub: 'Ярус I', flavor: 'Здесь тьма впервые научилась дышать водой', bg: 0x06090b, fog: 0x07100f, fogD: .022, floor: 0x8e9a98, wall: 0x7a8686, hemiS: 0x2c4a52, hemiG: 0x080b0c, hemiI: 1.35, moon: 0x7aa4c4, accent: 0x3fe0d0, eye: 0x7ff6ff, vein: 0x1aa8a0, veinI: 0, enemy: 0x18222a, bullet: 0x5ff0ff, lift: [.96, 1.02, 1.04], kk: { floor: 0x8d9ea0, wall: 0x93a4a8, prop: 0xa9b0ae, gear: 0xffffff } },
+  { name: 'Пепельные Кузни', sub: 'Ярус II', flavor: 'Горны, что ковали цепи для солнца', bg: 0x0b0605, fog: 0x140806, fogD: .024, floor: 0x8a7a70, wall: 0x705c52, hemiS: 0x4a2a1c, hemiG: 0x0c0605, hemiI: 1.25, moon: 0xc48a6a, accent: 0xff6a1f, eye: 0xffb060, vein: 0xff5a10, veinI: 1.15, enemy: 0x2a1a16, bullet: 0xff7a2a, lift: [1.05, 1, .94], kk: { floor: 0xa88a7a, wall: 0x9e8070, prop: 0xb69a88, gear: 0xffffff } },
+  { name: 'Сердце Тьмы', sub: 'Ярус III', flavor: 'Там, где свет — лишь воспоминание', bg: 0x07050b, fog: 0x0c0714, fogD: .026, floor: 0x6e687a, wall: 0x50485f, hemiS: 0x34264a, hemiG: 0x08060c, hemiI: 1.2, moon: 0x9a7ad0, accent: 0xb05cff, eye: 0xd8a0ff, vein: 0x8a3cff, veinI: .5, enemy: 0x1e1428, bullet: 0xc77bff, lift: [1, .97, 1.06], kk: { floor: 0x8b84a0, wall: 0x7d7596, prop: 0xa098b2, gear: 0xffffff } },
 ];
-const MENU_BIOME = { ...BIOMES[0], bg: 0x060505, fog: 0x0b0806, fogD: .03, floor: 0x7a726a, wall: 0x645a52, hemiS: 0x3a2c22, hemiG: 0x080605, hemiI: .55, moon: 0x8a7a6a, accent: 0xff9a3c, vein: 0xff6a1a, veinI: .5, lift: [1.04, 1, .95] };
+const MENU_BIOME = { ...BIOMES[0], bg: 0x060505, fog: 0x0b0806, fogD: .03, floor: 0x7a726a, wall: 0x645a52, hemiS: 0x3a2c22, hemiG: 0x080605, hemiI: .55, moon: 0x8a7a6a, accent: 0xff9a3c, vein: 0xff6a1a, veinI: .5, lift: [1.04, 1, .95], kk: { floor: 0xa38f7c, wall: 0x998474, prop: 0xb39c88, gear: 0xffffff } };
 let biome = BIOMES[0];
+const HEMI_K = () => ASSETS.ok ? 1.6 : 1;
 function applyBiome(b) {
-  biome = b;
+  biome = b; tintEnv(b);
   scene.background.set(b.bg); scene.fog.color.set(b.fog); scene.fog.density = b.fogD;
   MAT.floor.color.set(b.floor); MAT.floor.emissive.set(b.vein); MAT.floor.emissiveIntensity = b.veinI;
   MAT.wall.color.set(b.wall); MAT.stone.color.set(b.wall).multiplyScalar(1.15); MAT.stoneTop.color.set(b.floor).multiplyScalar(.85);
-  hemi.color.set(b.hemiS); hemi.groundColor.set(b.hemiG); hemi.intensity = b.hemiI;
+  hemi.color.set(b.hemiS); hemi.groundColor.set(b.hemiG); hemi.intensity = b.hemiI * HEMI_K();
   moon.color.set(b.moon);
   MAT.enemy.color.set(b.enemy);
   GU.uLift.value.set(...b.lift);
@@ -1518,6 +1528,296 @@ function buildBanner(color) {
   return { root, cloth };
 }
 
+
+/* =====================================================================
+   KAYKIT ASSETS — rigged, animated characters and a modular dungeon
+   (KayKit packs by Kay Lousberg, CC0). Loaded at boot; if loading fails,
+   the procedural models above are used instead.
+   ===================================================================== */
+const ASSET_BASE = location.protocol === 'file:' ? 'https://cdn.jsdelivr.net/gh/sav03999-art/Lamplighter@main/assets/' : new URL('assets/', location.href).href;
+const ASSET_FILES = { env: 924, Rogue_Hooded: 542, Skeleton_Minion: 782, Skeleton_Rogue: 149, Skeleton_Warrior: 164, Skeleton_Mage: 127, Knight: 702, Mage: 233 };
+const ASSETS = { ok: false, gltf: {}, clips: {}, pieces: {}, heroTex: null };
+async function loadAssets(progress) {
+  const loader = new GLTFLoader(); loader.setMeshoptDecoder(MeshoptDecoder);
+  const total = Object.values(ASSET_FILES).reduce((a, b) => a + b, 0) * 1024, got = {};
+  const load = k => loader.loadAsync(ASSET_BASE + k + '.glb', e => { got[k] = e.loaded; progress(Math.min(1, Object.values(got).reduce((a, b) => a + b, 0) / total)); }).then(g => { ASSETS.gltf[k] = g; });
+  await Promise.race([Promise.all(Object.keys(ASSET_FILES).map(load)), new Promise((_, rej) => setTimeout(() => rej(new Error('asset timeout')), 60000))]);
+  prepAssets(); ASSETS.ok = true;
+}
+const boneKey = n => n.replace(/[^a-z0-9]/gi, '').toLowerCase();
+function findBone(root, name) { const k = boneKey(name); let r = null; root.traverse(o => { if (!r && o.isBone && boneKey(o.name) === k) r = o; }); return r; }
+// keep characters in place: the game moves them, the clips only animate the pose
+function lockRoot(clips) { for (const c of clips) for (const t of c.tracks) if (/^(hips|root)\.position$/.test(t.name)) { const v = t.values; for (let i = 3; i < v.length; i += 3) { v[i] = v[0]; v[i + 2] = v[2]; } } return clips; }
+function recolorTex(tex, fn) {
+  const img = tex.image, c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+  const g = c.getContext('2d'); g.drawImage(img, 0, 0); const d = g.getImageData(0, 0, c.width, c.height); fn(d.data); g.putImageData(d, 0, 0);
+  const t = new THREE.CanvasTexture(c); for (const k of ['flipY', 'colorSpace', 'magFilter', 'minFilter', 'wrapS', 'wrapT', 'generateMipmaps', 'anisotropy']) t[k] = tex[k]; t.needsUpdate = true; return t;
+}
+function hueShift(data, test, map) {
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+    if (d < .04) continue;
+    const s = d / (1 - Math.abs(2 * l - 1) + 1e-6); let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h = (h * 60 + 360) % 360;
+    if (!test(h, s, l)) continue;
+    const [H, S, L] = map(h, s, l), C = (1 - Math.abs(2 * L - 1)) * S, X = C * (1 - Math.abs((H / 60) % 2 - 1)), m = L - C / 2;
+    const [R, G, B] = H < 60 ? [C, X, 0] : H < 120 ? [X, C, 0] : H < 180 ? [0, C, X] : H < 240 ? [0, X, C] : H < 300 ? [X, 0, C] : [C, 0, X];
+    data[i] = (R + m) * 255; data[i + 1] = (G + m) * 255; data[i + 2] = (B + m) * 255;
+  }
+}
+function prepAssets() {
+  const G = ASSETS.gltf;
+  ASSETS.clips.hero = lockRoot(G.Rogue_Hooded.animations); ASSETS.clips.skel = lockRoot(G.Skeleton_Minion.animations);
+  ASSETS.clips.knight = lockRoot(G.Knight.animations); ASSETS.clips.mage = lockRoot(G.Mage.animations);
+  // the green hooded rogue becomes the Lamplighter: soot-dark cloak with an ember-red tint
+  G.Rogue_Hooded.scene.traverse(o => { if (o.isMesh && o.material.map && !ASSETS.heroTex) ASSETS.heroTex = recolorTex(o.material.map, d => hueShift(d, (h, s) => h > 65 && h < 185 && s > .12, (h, s, l) => [8, Math.min(1, s * .7), l * .6])); });
+  const env = G.env.scene; env.updateMatrixWorld(true);
+  for (const w of env.children) {
+    const inv = new THREE.Matrix4().copy(w.matrixWorld).invert(), parts = [];
+    w.traverse(o => { if (o.isMesh) parts.push({ geo: o.geometry, mat: o.material, m4: new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld) }); });
+    ASSETS.pieces[w.name] = { obj: w, parts };
+  }
+}
+
+/* ---------- environment materials, instancing ---------- */
+const ENVMATS = new Map(), ENVTINT = { floor: [], wall: [], prop: [], gear: [] };
+function envMat(src, cat) {
+  const k = src.uuid + cat; let m = ENVMATS.get(k);
+  if (!m) { m = src.clone(); m.metalness = 0; m.roughness = Math.max(.72, m.roughness ?? 1); ENVMATS.set(k, m); ENVTINT[cat].push(m); m.color.set(biome.kk?.[cat] ?? 0xffffff); }
+  return m;
+}
+function tintEnv(b) { for (const cat in ENVTINT) for (const m of ENVTINT[cat]) m.color.set(b.kk?.[cat] ?? 0xffffff); }
+function pieceClone(key, cat) {
+  const p = ASSETS.pieces[key]; if (!p) return new THREE.Group();
+  const o = p.obj.clone(true); o.position.set(0, 0, 0); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1);
+  o.traverse(m => { if (m.isMesh) { m.material = envMat(m.material, cat); m.castShadow = true; m.receiveShadow = true; } });
+  return o;
+}
+class EnvBatch {
+  constructor() { this.items = new Map(); }
+  add(key, cat, x, y, z, ry = 0, sx = 1, sy = 1, sz = 1) {
+    const p = ASSETS.pieces[key]; if (!p) return;
+    const k = key + '|' + cat; let it = this.items.get(k); if (!it) { it = { p, cat, list: [] }; this.items.set(k, it); }
+    _p.set(x, y, z); _s.set(sx, sy, sz); _q.setFromEuler(_e.set(0, ry, 0)); it.list.push(new THREE.Matrix4().compose(_p, _q, _s));
+  }
+  build(group) {
+    for (const it of this.items.values()) for (const part of it.p.parts) {
+      const im = new THREE.InstancedMesh(part.geo, envMat(part.mat, it.cat), it.list.length);
+      it.list.forEach((m, i) => im.setMatrixAt(i, _m4.multiplyMatrices(m, part.m4)));
+      im.instanceMatrix.needsUpdate = true; im.castShadow = it.cat !== 'floor'; im.receiveShadow = true; im.computeBoundingSphere(); group.add(im);
+    }
+  }
+}
+
+/* ---------- animation ---------- */
+class Anim {
+  constructor(root, clips) { this.mixer = new THREE.AnimationMixer(root); this.clips = {}; for (const c of clips) this.clips[c.name] = c; this.cur = null; this.name = ''; }
+  play(name, o = {}) {
+    const c = this.clips[name]; if (!c) return null;
+    if (name === this.name && !o.restart) { this.cur.timeScale = o.dur ? c.duration / o.dur : (o.speed || 1); return this.cur; }
+    const a = this.mixer.clipAction(c); a.reset(); a.enabled = true; a.setLoop(o.once ? THREE.LoopOnce : THREE.LoopRepeat, Infinity); a.clampWhenFinished = true;
+    a.timeScale = o.dur ? c.duration / o.dur : (o.speed || 1); a.setEffectiveWeight(1);
+    if (this.cur && this.cur !== a) a.crossFadeFrom(this.cur, o.fade ?? .14, false);
+    a.play(); this.cur = a; this.name = name; return a;
+  }
+  update(dt) { this.mixer.update(dt); }
+}
+function charInstance(key, clipKey, o = {}) {
+  const model = SkeletonUtils.clone(ASSETS.gltf[key].scene);
+  let mat = null, body = null, maxV = 0;
+  model.traverse(m => {
+    if (!m.isMesh) return;
+    m.frustumCulled = false; m.castShadow = false; m.receiveShadow = true;
+    if (/eyes/i.test(m.name)) { m.material = glow(o.eye ?? 0xffd060, o.eyeK ?? 4); return; }
+    if (!mat) { mat = m.material.clone(); if (o.map) mat.map = o.map; if (o.tint) mat.color.set(o.tint); mat.emissive = new THREE.Color(0); mat.metalness = 0; mat.roughness = .72; if (o.rim) rimify(mat, o.rim, o.rimK ?? .45); }
+    m.material = mat;
+    if (m.isSkinnedMesh) { const n = m.geometry.attributes.position.count; if (n > maxV) { maxV = n; body = m; } }
+  });
+  if (body) body.castShadow = true;
+  return { model, mat, anim: new Anim(model, ASSETS.clips[clipKey] || []) };
+}
+function buildLantern() {
+  const lan = new THREE.Group();
+  M(GEO.cylLo, MAT.metal, [.01, .22, .01], [0, .24, 0], lan);
+  M(GEO.cyl, MAT.bronze, [.12, .035, .12], [0, .13, 0], lan); M(GEO.cone, MAT.bronze, [.1, .08, .1], [0, .19, 0], lan);
+  M(GEO.cyl, MAT.bronze, [.11, .03, .11], [0, -.13, 0], lan);
+  for (let k = 0; k < 4; k++) { const a = k / 4 * TAU + .785; M(GEO.box, MAT.metal, [.014, .25, .014], [Math.cos(a) * .085, 0, Math.sin(a) * .085], lan); }
+  const core = M(GEO.sphere, glow(0xffc27a, 9), [.065, .095, .065], [0, 0, 0], lan);
+  const halo = M(GEO.sphere, new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff9a4a).multiplyScalar(1.4), transparent: true, opacity: .28, depthWrite: false, blending: THREE.AdditiveBlending }), .17, [0, 0, 0], lan);
+  lan.scale.setScalar(1.25);
+  return { lan, core, halo };
+}
+function buildHeroKK() {
+  const c = charInstance('Rogue_Hooded', 'hero', { map: ASSETS.heroTex, rim: 0xff9a4a, rimK: .3 });
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body); body.add(c.model); c.model.scale.setScalar(.95);
+  const sw = pieceClone('sword_1handed', 'gear');
+  sw.traverse(m => { if (m.isMesh) { m.material = m.material.clone(); m.material.emissive = new THREE.Color(0xff5a14); m.material.emissiveIntensity = .7; } });
+  findBone(c.model, 'handslot.r')?.add(sw);
+  const L = buildLantern(); root.add(L.lan);
+  return { root, body, model: c.model, mat: c.mat, anim: c.anim, handL: findBone(c.model, 'handslot.l'), lan: L.lan, core: L.core, halo: L.halo, kk: true, serial: -1 };
+}
+const KK_ENEMY = {
+  shade: { key: 'Skeleton_Minion', s: .85, gear: [['Skeleton_Blade', 'r']] },
+  weeper: { key: 'Skeleton_Rogue', s: .85, gear: [['Skeleton_Crossbow', 'r']] },
+  smolder: { key: 'Skeleton_Minion', s: .62, tint: 0xc8805a, bomb: true, eye: 0xffb040 },
+  brute: { key: 'Skeleton_Warrior', s: 1.28, gear: [['Skeleton_Axe', 'r'], ['Skeleton_Shield_Small_A', 'l']], eye: 0xff9a40 },
+  stalker: { key: 'Skeleton_Rogue', s: .9, tint: 0x4a3e58, gear: [['Skeleton_Blade', 'r']], fade: true, eye: 0xff3048 },
+  caster: { key: 'Skeleton_Mage', s: .9, gear: [['Skeleton_Staff', 'r']] },
+};
+const KK_H = { Skeleton_Minion: 2.17, Skeleton_Rogue: 2.31, Skeleton_Warrior: 2.59, Skeleton_Mage: 2.63, Knight: 2.47 };
+function buildEnemyKK(type) {
+  const d = KK_ENEMY[type], c = charInstance(d.key, 'skel', { tint: d.tint, eye: d.eye ?? biome.eye, eyeK: 5, rim: biome.accent, rimK: .38 });
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body); body.add(c.model); c.model.scale.setScalar(d.s);
+  for (const [k, side] of d.gear || []) findBone(c.model, 'handslot.' + side)?.add(pieceClone(k, 'gear'));
+  let belly = null;
+  if (d.bomb) { belly = new THREE.Mesh(GEO.sphere, new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffa030).multiplyScalar(4) })); belly.scale.setScalar(.34); findBone(c.model, 'handslot.r')?.add(belly); }
+  if (d.fade) c.mat.transparent = true;
+  const h = KK_H[d.key] * d.s;
+  return { root, body, mats: [c.mat], anim: c.anim, kk: true, model: c.model, belly, fadeMat: d.fade ? c.mat : null, glowY: h * .62, h };
+}
+const KK_BOSS = {
+  warden: { key: 'Knight', clips: 'knight', s: 2.05, tint: 0x8ab4ae, rim: 0x5ff0ff, core: 0x5ff0ff },
+  crucible: { key: 'Skeleton_Mage', clips: 'skel', s: 2.3, noHat: true, tint: 0x8a5848, rim: 0xff6a1a, eye: 0xff8a3a, gear: [['Skeleton_Staff', 'r']], core: 0xff6a1a },
+};
+function buildBossKK(k) {
+  const d = KK_BOSS[k], c = charInstance(d.key, d.clips, { tint: d.tint, rim: d.rim, rimK: .28, eye: d.eye, eyeK: 6 });
+  if (d.noHat) c.model.traverse(m => { if (m.isMesh && /hat/i.test(m.name)) m.visible = false; });
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body); body.add(c.model); c.model.scale.setScalar(d.s);
+  for (const [g, side] of d.gear || []) findBone(c.model, 'handslot.' + side)?.add(pieceClone(g, 'gear'));
+  let coreM = null; const chest = findBone(c.model, 'chest');
+  if (chest) { coreM = new THREE.Mesh(GEO.sphere, new THREE.MeshBasicMaterial({ color: new THREE.Color(d.core).multiplyScalar(4) })); coreM.scale.setScalar(.11); coreM.position.set(0, .12, .16); chest.add(coreM); }
+  c.model.traverse(m => { if (m.isSkinnedMesh) m.castShadow = true; });
+  return { root, body, mats: [c.mat], anim: c.anim, kk: true, model: c.model, coreM, glowY: KK_H[d.key] * d.s * .5, scale: 1 };
+}
+function buildMerchantKK() {
+  const c = charInstance('Mage', 'mage', { rim: 0x7fffe0, rimK: .3 });
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body); body.add(c.model); c.model.scale.setScalar(1);
+  c.anim.play('Sit_Floor_Idle');
+  const lamps = [];
+  for (let i = 0; i < 5; i++) { const a = -1.2 + i * .6; const l = new THREE.Group(); l.position.set(Math.sin(a) * 1.5, 2.3 + Math.cos(i) * .2, Math.cos(a) * .3 - .3); body.add(l); M(GEO.cylLo, MAT.metal, [.01, .4, .01], [0, .25, 0], l); M(GEO.sphere, glow(0x7fffe0, 4), [.08, .11, .08], [0, 0, 0], l); M(GEO.cyl, MAT.bronze, [.08, .03, .08], [0, .1, 0], l); lamps.push(l); }
+  const rug = pieceClone('table_small_decorated_A', 'prop'); rug.position.set(1.3, 0, .6); body.add(rug);
+  return { root, body, lamps, anim: c.anim };
+}
+function buildChestAltar(gold) {
+  const root = new THREE.Group(), key = gold ? 'chest_gold' : 'chest';
+  const ch = pieceClone(key, 'prop'); ch.scale.setScalar(1.1); root.add(ch);
+  const lid = ch.getObjectByName(key + '_lid');
+  const color = gold ? 0xffb84a : 0xffc060, gem = new THREE.Group(); gem.position.y = 2.2; root.add(gem);
+  const gm = glow(color, 4); M(GEO.octa, gm, [.28, .42, .28], [0, 0, 0], gem);
+  const ring = M(GEO.torus, glow(color, 2.2), [.55, .55, .3], [0, 0, 0], gem, [Math.PI / 2, 0, 0]);
+  return { root, gem, ring, lid, gm };
+}
+function buildPedestalKK(color) {
+  const root = new THREE.Group(); const c = pieceClone('column', 'prop'); c.scale.set(1.25, 1, 1.25); root.add(c);
+  const gem = new THREE.Group(); gem.position.y = 1.95; root.add(gem); M(GEO.octa, glow(color, 4), [.22, .34, .22], [0, 0, 0], gem);
+  return { root, gem };
+}
+
+/* ---------- rooms from modular pieces ---------- */
+const KK_WALL_Y = .85;
+const KK_WIDE = ['wall', 'wall', 'wall_cracked', 'wall_broken', 'wall_shelves', 'wall_arched', 'wall_archedwindow_gated', 'wall_gated', 'wall_pillar'];
+const KK_WIDE_SIDE = ['wall', 'wall', 'wall_cracked', 'wall_broken', 'wall_shelves', 'wall_arched', 'wall_pillar'];
+const KK_FLOOR = [['floor_tile_small', 12], ['floor_tile_small_broken_A', 1], ['floor_tile_small_broken_B', 1], ['floor_tile_small_decorated', 1.4], ['floor_tile_small_weeds_A', .8], ['floor_tile_small_weeds_B', .8]];
+const KK_BLOCKS = [['barrel_large', .95], ['box_large', 1.15], ['crates_stacked', .85], ['box_stacked', .55], ['keg_decorated', .55], ['trunk_large_A', 1.2], ['table_medium_decorated_A', .9], ['barrel_small_stack', 1]];
+const KK_DECOR = [['candle_triple', 1.1], ['candle_lit', 1.1], ['barrel_small', .85], ['box_small_decorated', .85], ['candle_triple', 1.1], ['barrel_small_stack', .75]];
+function buildRoomKK() {
+  const R = room, g = new THREE.Group(); R.group = g; scene.add(g);
+  const own = R.own = [], B = new EnvBatch();
+  const under = new THREE.Mesh(new THREE.PlaneGeometry(400, 400).rotateX(-Math.PI / 2), MAT.void); under.position.y = -.12; own.push(under.geometry); g.add(under);
+  const ex = R.W * T / 2, ez = R.H * T / 2;
+  const isDoor = c => R.doorCols.includes(c), nearDoor = c => isDoor(c - 1) || isDoor(c + 1);
+  // floor: one 2x2 tile per cell, including the cells under props and the door thresholds
+  const fl = KK_FLOOR.map(([k, w]) => [k, R.floor === 0 || !k.includes('weeds') ? w : w * .15]);
+  for (let r = 1; r < R.H - 1; r++) for (let c = 1; c < R.W - 1; c++) B.add(wpick(fl, o => o[1])[0], 'floor', tileX(c), 0, tileZ(r), rndi(0, 3) * Math.PI / 2);
+  for (const c of R.doorCols) B.add('floor_tile_small', 'floor', tileX(c), 0, tileZ(0));
+  // north wall (doors live here)
+  const zN = -ez + T - .5;
+  for (let c = 1; c <= R.W - 2; c++) {
+    if (isDoor(c)) continue;
+    if (nearDoor(c)) { if (isDoor(c + 1)) B.add('wall_endcap', 'wall', tileX(c) - 1, 0, zN, 0, 1, KK_WALL_Y, 1); else B.add('wall_endcap', 'wall', tileX(c) + 1, 0, zN, Math.PI, 1, KK_WALL_Y, 1); continue; }
+    if (c + 1 <= R.W - 2 && !isDoor(c + 1) && !nearDoor(c + 1) && chance(.6)) { B.add(pick(KK_WIDE), 'wall', tileX(c) + 1, 0, zN, 0, 1, KK_WALL_Y, 1); c++; continue; }
+    B.add('wall_half', 'wall', tileX(c) - 1, 0, zN, 0, 1, KK_WALL_Y, 1);
+  }
+  // side walls
+  const xW = -ex + T - .5, xE = ex - T + .5;
+  for (const side of [-1, 1]) {
+    const x = side < 0 ? xW : xE, rot = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+    for (let r = 1; r <= R.H - 2; r++) {
+      if (r + 1 <= R.H - 2 && chance(.6)) { B.add(pick(KK_WIDE_SIDE), 'wall', x, 0, tileZ(r) + 1, rot, 1, KK_WALL_Y, 1); r++; continue; }
+      B.add('wall_half', 'wall', x, 0, side < 0 ? tileZ(r) + 1 : tileZ(r) - 1, rot, 1, KK_WALL_Y, 1);
+    }
+  }
+  for (const x of [xW, xE]) B.add('pillar', 'wall', x, 0, zN, 0, 1, KK_WALL_Y, 1);
+  // south edge: a low parapet so the camera always sees the floor
+  const zS = ez - T + .25;
+  for (let c = 1; c <= R.W - 2; c++) B.add('barrier_half', 'wall', tileX(c) + 1, 0, zS, Math.PI);
+  for (const x of [xW + .25, xE - .25]) B.add('barrier_column', 'wall', x, 0, zS, Math.PI / 2, .25, 1, .7);
+  // interior: pillars and prop blocks
+  const border = (c, r) => r === 0 || c === 0 || r === R.H - 1 || c === R.W - 1;
+  for (let r = 1; r < R.H - 1; r++) for (let c = 1; c < R.W - 1; c++) {
+    const t = gget(c, r), x = tileX(c), z = tileZ(r);
+    if (t === 2) { if (chance(.5)) B.add('pillar', 'wall', x, 0, z, rndi(0, 3) * Math.PI / 2, 1.1, KK_WALL_Y, 1.1); else B.add('pillar_decorated', 'wall', x, 0, z, rndi(0, 3) * Math.PI / 2, .75, KK_WALL_Y, .75); }
+    else if (t === 1 && !border(c, r)) { const [k, s] = pick(KK_BLOCKS); B.add(k, 'prop', x, 0, z, rndi(0, 3) * Math.PI / 2, s, s, s); }
+  }
+  // torches and banners on the walls
+  R.sconces = [];
+  const torch = (x, z, rot) => {
+    B.add('torch_mounted', 'prop', x, 1.9, z, rot);
+    const root = new THREE.Group(); root.position.set(x + Math.sin(rot) * .45, 2.66, z + Math.cos(rot) * .45); g.add(root);
+    const fl = M(GEO.cone, glow(0xff9a40, 5), [.09, .3, .09], [0, .1, 0], root); R.sconces.push({ root, fl });
+  };
+  const banners = R.floor === 1 ? ['banner_patternA_red', 'banner_shield_brown'] : R.floor === 2 ? ['banner_shield_brown', 'banner_patternA_red'] : ['banner_patternB_blue', 'banner_shield_brown'];
+  let n = 0;
+  for (let c = 2; c <= R.W - 3; c++) {
+    if (isDoor(c) || nearDoor(c)) continue;
+    if (n % 3 === 0) torch(tileX(c), -ez + T, 0); else if (n % 3 === 2 && R.type !== 'menu') B.add(pick(banners), 'prop', tileX(c), 0, zN, 0, 1, KK_WALL_Y, 1);
+    n++;
+  }
+  for (let r = 3; r <= R.H - 3; r += 4) { torch(-ex + T, tileZ(r), Math.PI / 2); torch(ex - T, tileZ(r), -Math.PI / 2); }
+  // small clutter against the walls (the player bumps into it)
+  const edge = freeTiles((c, r) => r < R.H - 3 && !(r <= 2 && R.doorCols.some(dc => Math.abs(dc - c) <= 1)) && (gget(c, r - 1) === 1 && r === 1 || gget(c - 1, r) === 1 && c === 1 || gget(c + 1, r) === 1 && c === R.W - 2));
+  for (const [c, r] of shuffle(edge).slice(0, R.type === 'menu' ? 8 : 6)) {
+    let x = tileX(c), z = tileZ(r);
+    if (r === 1) z -= .45; else if (c === 1) x -= .45; else x += .45;
+    x += rnd(-.4, .4); z += rnd(-.2, .2);
+    const [k, s] = pick(KK_DECOR); B.add(k, 'prop', x, 0, z, rnd(0, TAU), s, s, s); R.obst.push({ x, z, r: .42 });
+  }
+  B.build(g);
+  // glowing cracks for the forge and the heart of darkness
+  if (biome.veinI > 0 && R.type !== 'menu') {
+    const vg = new THREE.PlaneGeometry((R.W - 2) * T, (R.H - 2) * T).rotateX(-Math.PI / 2); own.push(vg);
+    const uv = vg.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (R.W - 2) * T / 11, uv.getY(i) * (R.H - 2) * T / 11);
+    const vm = new THREE.MeshBasicMaterial({ map: TX.floor.vein, color: new THREE.Color(biome.vein).multiplyScalar(biome.veinI * .9), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: true });
+    const v = new THREE.Mesh(vg, vm); v.position.y = .07; v.renderOrder = 3; g.add(v); R.veinMat = vm;
+  }
+  // crystals in the biome colour, puddles in the flooded tier
+  const crystals = inst(GEO.coneLo, glow(biome.accent, 2.6), 30);
+  for (const [c, r] of shuffle(freeTiles((c, r) => [[1, 0], [-1, 0], [0, -1]].some(([a, b]) => gget(c + a, r + b) === 1) && r < R.H - 3)).slice(0, 7)) {
+    const x = tileX(c) + rnd(-.7, .7), z = tileZ(r) + rnd(-.7, .7);
+    for (let k = 0; k < rndi(2, 4); k++) { const s = rnd(.06, .13); pushInst(crystals, x + rnd(-.3, .3), s * 2.2, z + rnd(-.3, .3), s, s * 4.5, s, rnd(0, TAU), rnd(-.4, .4), rnd(-.4, .4)); }
+  }
+  crystals.instanceMatrix.needsUpdate = true; g.add(crystals);
+  if (R.floor === 0 && R.type !== 'menu') {
+    const pg = new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2); own.push(pg);
+    for (const [c, r] of shuffle(freeTiles()).slice(0, 4)) { const p = new THREE.Mesh(pg, MAT.puddle); p.position.set(tileX(c), .07, tileZ(r)); p.scale.set(rnd(.7, 1.5), 1, rnd(.5, 1.1)); p.rotation.y = rnd(0, TAU); g.add(p); }
+  }
+  // doors: an arched doorway with a wooden leaf that swings open when the room is cleared
+  R.doors = R.doorCols.map((c, i) => {
+    const root = pieceClone('wall_doorway', 'wall'); root.position.set(tileX(c), 0, zN); root.scale.set(1, KK_WALL_Y, 1); g.add(root);
+    const door = root.getObjectByName('wall_doorway_door');
+    const reward = R.choices[i], [col] = EMBLEMS[reward.kind] || EMBLEMS.next;
+    const portal = M(new THREE.PlaneGeometry(1.7, 2.9), new THREE.MeshBasicMaterial({ color: new THREE.Color(col).multiplyScalar(.9), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }), null, [tileX(c), 1.45, zN - .35], g);
+    own.push(portal.geometry);
+    const em = buildEmblem(reward.kind); em.position.set(tileX(c), 4.3, zN + .9); g.add(em);
+    const lbl = Labels.add(tileX(c), 5.2, zN + .9, `<b>${reward.label}</b><small>${reward.sub}</small>`); lbl.show = false;
+    return { c, x: tileX(c), z: tileZ(0), reward, mesh: { root, door, portal }, emblem: em, label: lbl, open: false, openT: 0 };
+  });
+  R.braziers = (R.brazierTiles || []).map(([c, r], i) => {
+    const b = buildBrazier(); b.root.position.set(tileX(c), 0, tileZ(r)); g.add(b.root);
+    return { x: tileX(c), z: tileZ(r), m: b, lit: false, light: staticLights[i] || null, flick: rnd(0, 10), hp: 0 };
+  });
+  for (const l of staticLights) l.intensity = 0;
+}
+
 /* =====================================================================
    ROOMS — grid, collision, flow field, generation, building
    ===================================================================== */
@@ -1639,6 +1939,7 @@ function inst(geo, mat, n) { const m = new THREE.InstancedMesh(geo, mat, Math.ma
 function pushInst(im, x, y, z, sx, sy, sz, ry = 0, rx = 0, rz = 0) { _p.set(x, y, z); _s.set(sx, sy, sz); _q.setFromEuler(_e.set(rx, ry, rz)); _m4.compose(_p, _q, _s); im.setMatrixAt(im.count++, _m4); }
 
 function buildRoomMeshes() {
+  if (ASSETS.ok) return buildRoomKK();
   const R = room, g = new THREE.Group(); R.group = g; scene.add(g);
   const own = R.own = [];
   const floorGeo = new THREE.PlaneGeometry(R.W * T, R.H * T).rotateX(-Math.PI / 2); own.push(floorGeo);
@@ -1821,7 +2122,7 @@ function later(d, fn) { timers.push({ t: d, fn, room: room?.id }); }
 function shake(a) { trauma = Math.min(1, trauma + a * save.set.shake); }
 function freeze(t) { hitstop = Math.max(hitstop, t); }
 function slowmo(scale, t) { timeScale = scale; slowT = t; }
-const lanternPos = () => ({ x: P.x + Math.sin(P.face + 1.1) * .45, z: P.z + Math.cos(P.face + 1.1) * .45 });
+const lanternPos = () => hero?.kk && P.lx !== undefined ? { x: P.lx, z: P.lz } : { x: P.x + Math.sin(P.face + 1.1) * .45, z: P.z + Math.cos(P.face + 1.1) * .45 };
 const playerLightR = () => (4.6 + 3.4 * (P.hp / S.maxHp)) * S.light;
 function inBrazierLight(x, z, r = 4.6) { if (!room) return false; for (const b of room.braziers) if (b.lit && d2(x, z, b.x, b.z) < r * r) return true; return false; }
 
@@ -1869,7 +2170,7 @@ function resetPlayer() {
   P.atk.step = -1; P.hp = S.maxHp; P.dashCh = S.dashCh; P.flare = 30 * (save.up.flare || 0);
 }
 function startAttack(step) {
-  const c = COMBO[step]; P.atk.step = step; P.atk.t = 0; P.atk.hit = false; P.atk.buf = false; P.next = (step + 1) % 3;
+  const c = COMBO[step]; P.atk.step = step; P.atk.t = 0; P.atk.hit = false; P.atk.buf = false; P.next = (step + 1) % 3; P.atkSerial = (P.atkSerial || 0) + 1;
   P.face = P.aim; P.vx += Math.sin(P.face) * c.lunge; P.vz += Math.cos(P.face) * c.lunge;
   SFX.swing(step);
   const col = 0xffa04a;
@@ -1898,12 +2199,12 @@ function fireSpark() {
     const a = P.aim + (i - (n - 1) / 2) * spread;
     PB.push({ x: lp.x, z: lp.z, vx: Math.sin(a) * 24, vz: Math.cos(a) * 24, life: .75, dmg: SPARK_BASE * S.spark, pierce: S.pierce, chain: S.chain, hit: new Set(), crit: S.homing && P.sparkCount % 3 === 0, homing: S.homing });
   }
-  P.face = P.aim; SFX.spark();
+  P.face = P.aim; SFX.spark(); P.castT = .3; P.castKind = 'spark';
   flashLight(lp.x, 1.4, lp.z, 0xffb060, 14, 6, .12);
   FX.burst(lp.x, 1.05, lp.z, 6, { color: 0xffc070, dir: P.aim, spread: .8, speed: 6, life: .2, size: .12, up: 1 });
 }
 function doFlare() {
-  P.flare = 0; const R = 7.5;
+  P.flare = 0; const R = 7.5; P.castT = .5; P.castKind = 'flare';
   SFX.flare(); shake(.75); freeze(.08); GU.uFlash.value = .32;
   flashLight(P.x, 2.5, P.z, 0xffd090, 140, 22, .7);
   Rings.spawn(P.x, P.z, R, 0xffc070, .5, .2, 4); Rings.spawn(P.x, P.z, R * .7, 0xffffff, .35, .3, 3);
@@ -2031,12 +2332,13 @@ const EN = {
 const barGeo = new THREE.PlaneGeometry(1, .12), barBgMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: .7, depthTest: false }), barFillMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, .3, .3), depthTest: false }), barEliteMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 1.8, .5), depthTest: false });
 function spawnEnemy(type, x, z, o = {}) {
   const def = EN[type], f = run.floor, hpMul = (1 + f * .65 + run.idx * .08) * (o.elite ? 2.8 : 1), dmgMul = (1 + f * .3) * (o.elite ? 1.25 : 1);
-  const mdl = ENEMY_MODELS[type]();
+  const mdl = ASSETS.ok ? buildEnemyKK(type) : ENEMY_MODELS[type]();
   const sc = o.elite ? 1.32 : 1; mdl.root.scale.setScalar(sc);
   const e = { id: ++eid, type, def, x, z, vx: 0, vz: 0, kx: 0, kz: 0, r: def.r * sc, hp: def.hp * hpMul, maxHp: def.hp * hpMul, dmg: def.dmg * dmgMul, speed: def.speed * (o.elite ? 1.05 : 1),
     face: angTo(x, z, P.x, P.z), state: 'chase', t: 0, cd: rnd(.6, 1.6), m: mdl, flash: 0, stun: 0, burnT: 0, burnDps: 0, burnTick: 0, elite: !!o.elite, dead: false, spawnT: o.instant ? 0 : .9, losT: 0, los: true,
     mass: def.mass * (o.elite ? 2.5 : 1), alpha: 1, ph: rnd(0, 10), orbT: 0, boss: false, minion: !!o.minion };
-  mdl.root.position.set(x, -1.6, z); mdl.root.rotation.y = e.face; scene.add(mdl.root);
+  mdl.root.position.set(x, mdl.kk ? 0 : -1.6, z); mdl.root.rotation.y = e.face; scene.add(mdl.root);
+  if (mdl.kk && e.spawnT <= 0) mdl.anim.play('Idle_Combat');
   const bar = new THREE.Group(); const bg = new THREE.Mesh(barGeo, barBgMat), fill = new THREE.Mesh(barGeo, o.elite ? barEliteMat : barFillMat);
   bg.scale.set(1.1, 1.4, 1); fill.position.z = .001; bar.add(bg, fill); bg.renderOrder = fill.renderOrder = 30; bar.visible = false; scene.add(bar); e.bar = bar; e.barFill = fill;
   if (e.spawnT > 0) { Tele.spawn({ x, z, r: e.r + .7, dur: .9, color: biome.accent, k: 1.4 }); SFX.spawn(); }
@@ -2057,7 +2359,7 @@ function dealDamage(e, base, o = {}) {
   const crit = o.crit ?? (o.src !== 'burn' && Math.random() < S.crit); if (crit) dmg *= S.critMult;
   if (e.boss && e.armorUp) dmg *= .5;
   dmg = Math.max(1, Math.round(dmg));
-  e.hp -= dmg; e.flash = .14; run.dmg += dmg;
+  e.hp -= dmg; e.flash = .14; run.dmg += dmg; if (!e.boss && e.state === 'chase') e.hitAnim = .3;
   if (o.src !== 'burn' && o.src !== 'flare') P.flare = Math.min(100, P.flare + dmg * .32 * S.flareGain * (e.boss ? .6 : 1));
   if (o.kb && !e.boss) { const a = angTo(o.fromX, o.fromZ, e.x, e.z), k = o.kb / e.mass; e.kx += Math.sin(a) * k; e.kz += Math.cos(a) * k; if (e.state === 'wind' && e.type === 'shade' && o.kb > 8) { e.state = 'rec'; e.t = .3; } }
   const dir = angTo(o.fromX ?? P.x, o.fromZ ?? P.z, e.x, e.z);
@@ -2085,6 +2387,7 @@ function killEnemy(e) {
   if (e.type === 'smolder' && e.state !== 'boom') smolderBurst(e, true);
   if (S.nova && Math.random() < S.nova) { const x = e.x, z = e.z; later(.08, () => { FX.explosion(x, z, 2.6, 0xffa040); SFX.explode(false); shake(.15); for (const o of enemies) if (!o.dead && o.spawnT <= 0 && d2(o.x, o.z, x, z) < (2.6 + o.r) ** 2) dealDamage(o, 16, { src: 'aoe', kb: 7, fromX: x, fromZ: z, noProc: true }); }); }
   e.bar.visible = false; dying.push(e);
+  if (e.m.kk) e.m.anim.play('Death_C_Skeletons', { once: true, dur: 1.1, fade: .08 });
 }
 function cleanupEnemies() { for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].dead) enemies.splice(i, 1); }
 function smolderBurst(e, harmless) {
@@ -2123,7 +2426,7 @@ const AI = {
     } else if (e.state === 'wind') {
       e.vx = damp(e.vx, 0, 8, dt); e.vz = damp(e.vz, 0, 8, dt); e.t -= dt;
       if (Math.random() < .5) glowP.emit(e.x + rnd(-.4, .4), 1.9, e.z + rnd(-.4, .4), 0, 1, 0, .4, .2, 0, .9, 1.7, 2.2, .8, 1, 0);
-      if (e.t <= 0) { const n = (run.floor >= 1 ? 5 : 3) + (e.elite ? 2 : 0); for (let i = 0; i < n; i++) ebullet(e.x, e.z, aP + (i - (n - 1) / 2) * .2, 7.5, { dmg: e.dmg, color: 0x9fd8ff, y: 1.6 }); SFX.shoot(); e.state = 'chase'; e.cd = rnd(2, 2.8) * (e.elite ? .7 : 1); }
+      if (e.t <= 0) { const n = (run.floor >= 1 ? 5 : 3) + (e.elite ? 2 : 0); for (let i = 0; i < n; i++) ebullet(e.x, e.z, aP + (i - (n - 1) / 2) * .2, 7.5, { dmg: e.dmg, color: 0x9fd8ff, y: 1.6 }); SFX.shoot(); e.state = 'chase'; e.shotT = .45; e.cd = rnd(2, 2.8) * (e.elite ? .7 : 1); }
     }
   },
   smolder(e, dt, dist, aP) {
@@ -2173,7 +2476,7 @@ function casterBlink(e) {
 function updateEnemies(dt) {
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i]; if (e.dead) continue;
-    if (e.spawnT > 0) { e.spawnT -= dt; const k = 1 - Math.max(0, e.spawnT) / .9; e.m.root.position.set(e.x, -1.6 * (1 - easeOut(k)), e.z); if (Math.random() < .6) FX.smoke(e.x, .1, e.z, 1, { color: 0x05040a, size: .6, size1: 1.6, life: .8, a: .7, jit: 1 }); continue; }
+    if (e.spawnT > 0) { e.spawnT -= dt; const k = 1 - Math.max(0, e.spawnT) / .9; e.m.root.position.set(e.x, e.m.kk ? 0 : -1.6 * (1 - easeOut(k)), e.z); if (Math.random() < .6) FX.smoke(e.x, .1, e.z, 1, { color: 0x05040a, size: .6, size1: 1.6, life: .8, a: .7, jit: 1 }); continue; }
     e.flash = Math.max(0, e.flash - dt); e.orbT -= dt; e.vuln = Math.max(0, (e.vuln || 0) - dt);
     if (e.burnT > 0) { e.burnT -= dt; e.burnTick -= dt; if (Math.random() < .5) glowP.emit(e.x + rnd(-.3, .3), rnd(.5, 1.6), e.z + rnd(-.3, .3), 0, 2, 0, .4, .25, 0, 3, 1.2, .3, .8, 1, -1); if (e.burnTick <= 0) { e.burnTick = .5; dealDamage(e, e.burnDps * .5 / S.dmg, { src: 'burn', noProc: true, crit: false }); if (e.dead) continue; } }
     const dist = Math.hypot(P.x - e.x, P.z - e.z), aP = angTo(e.x, e.z, P.x, P.z);
@@ -2198,15 +2501,41 @@ function updateEnemies(dt) {
   }
 }
 const _white = new THREE.Color(1, 1, 1);
+function animEnemyKK(e, t, dt) {
+  const A = e.m.anim, sp = Math.hypot(e.vx, e.vz), T = e.type, s = e.state;
+  e.hitAnim = Math.max(0, (e.hitAnim || 0) - dt); e.shotT = Math.max(0, (e.shotT || 0) - dt);
+  let want, o = {};
+  if (e.spawnT > 0) { want = 'Spawn_Ground_Skeletons'; o = { once: true, dur: .95, fade: 0 }; }
+  else if (e.stun > 0) { want = 'Hit_B'; o = { once: true, dur: .7 }; }
+  else {
+    const slow = T === 'brute' || T === 'caster' || (T === 'weeper' && sp < 3);
+    want = sp > .45 ? (slow ? 'Walking_D_Skeletons' : 'Running_C') : 'Idle_Combat';
+    o = { speed: want === 'Idle_Combat' ? 1 : slow ? .7 + sp * .22 : .55 + sp * .1 };
+    if (T === 'shade' && (s === 'wind' || s === 'lunge')) { want = '1H_Melee_Attack_Stab'; o = { once: true, dur: 1.1, fade: .06 }; }
+    else if (T === 'stalker' && s === 'lunge') { want = '1H_Melee_Attack_Stab'; o = { once: true, dur: .6, fade: .05 }; }
+    else if (T === 'stalker' && s === 'wind') { want = 'Idle_Combat'; }
+    else if (T === 'brute' && (s === 'wind' || s === 'rec')) { want = '2H_Melee_Attack_Chop'; o = { once: true, dur: 1.75, fade: .1 }; }
+    else if (T === 'weeper' && s === 'wind') { want = '1H_Ranged_Aiming'; }
+    else if (T === 'caster' && s === 'wind') { want = 'Spellcast_Summon'; o = { once: true, dur: .9 }; }
+    else if (T === 'smolder' && s === 'fuse') { want = 'Taunt'; o = { speed: 2.6 }; }
+    if (e.shotT > 0) { want = '1H_Ranged_Shoot'; o = { once: true, dur: .45, fade: .05 }; }
+    if (e.hitAnim > 0 && s === 'chase') { want = 'Hit_A'; o = { once: true, dur: .32, fade: .05 }; }
+  }
+  A.play(want, o); A.update(dt);
+  if (e.m.fadeMat) e.m.fadeMat.opacity = e.alpha;
+  if (e.m.belly) { const f = s === 'fuse' ? .8 - e.t : 0; e.m.belly.scale.setScalar(.34 * (1 + (f > 0 ? Math.sin(t * (20 + f * 30)) * .2 + f * .8 : Math.sin(t * 6) * .08))); e.m.belly.material.color.setRGB(4 + f * 10, 1.8 + f * 5, .4 + f * 2); if (Math.random() < .3) { const wp = e.m.belly.getWorldPosition(_v3); glowP.emit(wp.x, wp.y + .2, wp.z, rnd(-.3, .3), 1.5, rnd(-.3, .3), .4, .15, 0, 4, 1.6, .3, .9, 1, -1); } }
+}
 function animateEnemies(t, dt) {
   for (const e of enemies) {
     if (e.dead) continue;
-    const m = e.m; if (e.spawnT > 0 && !e.boss) { m.root.rotation.y = e.face; continue; }
+    const m = e.m; if (m.kk && !e.boss) { animEnemyKK(e, t, dt); if (e.spawnT > 0) { m.root.rotation.y = e.face; continue; } }
+    else if (e.spawnT > 0 && !e.boss) { m.root.rotation.y = e.face; continue; }
     if (!e.boss) m.root.position.set(e.x, 0, e.z);
     m.root.rotation.y = e.face;
     for (const mt of m.mats) { mt.emissive.copy(_white).multiplyScalar(e.flash > 0 ? (e.boss ? .45 : 1.3) * (e.flash / .14) : (e.stun > 0 ? .25 : 0)); if (e.burnT > 0 && e.flash <= 0) mt.emissive.setRGB(.5, .15, 0); }
     const sp = Math.hypot(e.vx, e.vz), bob = Math.sin(t * 6 + e.ph);
-    if (e.type === 'shade') { m.body.position.y = .95 + bob * .12; m.body.rotation.x = Math.min(.5, sp * .05) + (e.state === 'wind' ? -.4 : 0); const sq = e.state === 'wind' ? 1 + (.42 - e.t) * .6 : 1; m.body.scale.set(1 / Math.sqrt(sq), sq, 1 / Math.sqrt(sq)); if (Math.random() < .35) smokeP.emit(e.x - Math.sin(e.face) * .5, .7, e.z - Math.cos(e.face) * .5, 0, .3, 0, .7, .35, .9, .01, .01, .02, .55, 1, -.4); }
+    if (m.kk && !e.boss) { /* skeletal animation handled in animEnemyKK */ }
+    else if (e.type === 'shade') { m.body.position.y = .95 + bob * .12; m.body.rotation.x = Math.min(.5, sp * .05) + (e.state === 'wind' ? -.4 : 0); const sq = e.state === 'wind' ? 1 + (.42 - e.t) * .6 : 1; m.body.scale.set(1 / Math.sqrt(sq), sq, 1 / Math.sqrt(sq)); if (Math.random() < .35) smokeP.emit(e.x - Math.sin(e.face) * .5, .7, e.z - Math.cos(e.face) * .5, 0, .3, 0, .7, .35, .9, .01, .01, .02, .55, 1, -.4); }
     else if (e.type === 'weeper') { m.body.position.y = Math.sin(t * 2 + e.ph) * .05; const up = e.state === 'wind' ? -2.3 : -.15 + Math.sin(t * 2 + e.ph) * .1; for (const a of m.arms) a.rotation.x = damp(a.rotation.x, up, 10, dt); }
     else if (e.type === 'brute') { const w = e.state === 'wind' ? (.9 - e.t) / .9 : 0; m.body.position.y = 1.25 + Math.abs(bob) * .08 * Math.min(1, sp); for (let k = 0; k < 2; k++) m.arms[k].rotation.x = e.state === 'wind' ? -2.6 * easeOut(w) : e.state === 'rec' ? .6 : Math.sin(t * 4 + k * 3) * .3 * Math.min(1, sp); m.coreM.material.color.setRGB(4 + w * 6, 1.5 + w * 2, .3); }
     else if (e.type === 'smolder') { m.body.position.y = .55 + Math.abs(Math.sin(t * 18 + e.ph)) * .05 * Math.min(1, sp); const f = e.state === 'fuse' ? .8 - e.t : 0; const pulse = f > 0 ? 1 + Math.sin(t * (20 + f * 30)) * .12 + f * .4 : 1; m.body.scale.setScalar(pulse); m.belly.material.color.setRGB(4 + f * 10, 2 + f * 5, .5 + f * 2); m.legs.forEach((l, k) => l.rotation.x = Math.sin(t * 20 + k * 1.6) * .5 * Math.min(1, sp)); }
@@ -2220,7 +2549,15 @@ function animateEnemies(t, dt) {
     }
   }
   for (let i = dying.length - 1; i >= 0; i--) {
-    const e = dying[i]; e.deathT += dt; const k = e.deathT / .4;
+    const e = dying[i]; e.deathT += dt;
+    if (e.m.kk) {
+      e.m.anim.update(dt); const k = Math.max(0, (e.deathT - 1.1) / .6);
+      e.m.root.position.y = -k * 1.2; for (const mt of e.m.mats) mt.emissive.setRGB(0, 0, 0);
+      if (e.deathT < .2) for (const mt of e.m.mats) mt.emissive.setRGB(1.2 * (1 - e.deathT / .2), .6 * (1 - e.deathT / .2), .3);
+      if (k >= 1) { removeEnemyMesh(e); dying.splice(i, 1); }
+      continue;
+    }
+    const k = e.deathT / .4;
     e.m.root.scale.setScalar(Math.max(.01, (e.elite ? 1.32 : 1) * (1 - easeOut(Math.min(1, k)) * .9))); e.m.root.position.y = -k * .6;
     for (const mt of e.m.mats) mt.emissive.setRGB(2 * (1 - k), 1.2 * (1 - k), .6 * (1 - k));
     if (k >= 1) { removeEnemyMesh(e); dying.splice(i, 1); }
@@ -2349,7 +2686,7 @@ function clampToRoom(x, z, pad = 2.6) { const hx = room.W * T / 2 - pad, hz = ro
 function bossRoar(e, text) { SFX.roar(); shake(.6); Rings.spawn(e.x, e.z, 9, e.B.color, .8); if (text) HUD.toast('skull', e.B.name, text, '#e2394a'); }
 
 function spawnBoss(f) {
-  const B = BOSSES[f], mdl = BOSS_MODELS[B.key]();
+  const B = BOSSES[f], mdl = ASSETS.ok && KK_BOSS[B.key] ? buildBossKK(B.key) : BOSS_MODELS[B.key]();
   const e = { id: ++eid, type: B.key, def: { color: B.color, ember: [0, 0] }, x: 0, z: tileZ(4), y: 0, vx: 0, vz: 0, kx: 0, kz: 0, r: B.r, hp: B.hp, maxHp: B.hp, dmg: 20, speed: 2.4, face: 0,
     state: 'dormant', t: 0, cd: 1.2, m: mdl, flash: 0, stun: 0, burnT: 0, burnDps: 0, burnTick: 0, dead: false, spawnT: 0, losT: 0, los: true, mass: 1000, alpha: 1, ph: 0, orbT: 0,
     boss: true, B, phase: 1, ai: bossUpdate, flying: !!B.flying, gen: null, last: '', pose: 'idle', summonT: 12, eclipseT: 9, vuln: 0, elite: false, bar: new THREE.Group(), barFill: null };
@@ -2511,10 +2848,26 @@ function bossUpdate(e, dt, dist, aP) {
   else { const opts = kit.pick(e, dist).filter(o => o[0] !== e.last); name = wpick(opts, o => o[1])[0]; }
   e.last = name; e.vx = e.vz = 0; e.gen = kit[name](e);
 }
+const KK_POSES = {
+  warden: { 'charge-wind': ['Block'], charge: ['Running_B', { speed: 1.6 }], stagger: ['Hit_B', { once: true, dur: 1 }], crouch: ['Jump_Start', { once: true, dur: .35 }], air: ['Jump_Idle'], land: ['Jump_Land', { once: true, dur: .55 }],
+    'whirl-wind': ['2H_Melee_Attack_Stab', { once: true, dur: 1.4 }], whirl: ['2H_Melee_Attack_Spinning', { speed: 1.5 }], roar: ['Cheer', { once: true, dur: 1.8 }], dying: ['Death_A', { once: true, dur: 2.2 }], idle: '2H_Melee_Idle', walk: 'Walking_B' },
+  crucible: { raise: ['Spellcast_Summon', { once: true, dur: 1 }], 'breath-wind': ['Spellcasting'], breath: ['Spellcast_Shoot', { speed: 1.6 }], 'hammer-wind': ['2H_Melee_Attack_Chop', { once: true, dur: 1.6 }], hammer: ['2H_Melee_Attack_Chop', { once: true, dur: 1.6 }],
+    roar: ['Taunt', { once: true, dur: 1.8 }], dying: ['Death_C_Skeletons', { once: true, dur: 2.2 }], idle: 'Idle_Combat', walk: 'Walking_D_Skeletons' },
+};
+function animBossKK(e, t, dt) {
+  const m = e.m, sp = Math.hypot(e.vx, e.vz), map = KK_POSES[e.type], p = map[e.pose];
+  if (p) m.anim.play(p[0], p[1] || {}); else if (sp > .5) m.anim.play(map.walk, { speed: .8 + sp * .18 }); else m.anim.play(map.idle);
+  m.anim.update(dt);
+  m.root.position.set(e.x, e.y || 0, e.z); m.root.rotation.y = e.face;
+  if (m.coreM) { const f = 3.5 + Math.sin(t * 5) * 1.2 + (e.pose === 'breath' || e.pose === 'raise' ? 3 : 0); const c = KK_BOSS[e.type].core; _col.set(c); m.coreM.material.color.setRGB(_col.r * f, _col.g * f, _col.b * f); }
+  if (e.type === 'warden' && Math.random() < .25) smokeP.emit(e.x + rnd(-.8, .8), 3, e.z + rnd(-.8, .8), 0, -.6, 0, 1.4, .4, 1.4, .04, .08, .1, .35, .5, .3);
+  if (e.type === 'crucible' && Math.random() < .6) glowP.emit(e.x + rnd(-1, 1), rnd(1, 4.5), e.z + rnd(-1, 1), rnd(-.3, .3), 2, rnd(-.3, .3), .8, .18, 0, 4, 1.5, .3, .9, 1, -1);
+}
 function animateBoss(e, t, dt) {
   const m = e.m, sp = Math.hypot(e.vx, e.vz), walk = Math.sin(t * 7) * Math.min(1, sp / 2);
-  m.root.position.set(e.x, e.y || 0, e.z);
   for (const mt of m.mats) { if (e.vuln > 0 && e.flash <= 0) mt.emissive.setRGB(.25, .45, .5); }
+  if (m.kk) { animBossKK(e, t, dt); return; }
+  m.root.position.set(e.x, e.y || 0, e.z);
   if (e.type === 'warden') {
     m.legs[0].rotation.x = walk * .5; m.legs[1].rotation.x = -walk * .5;
     const p = e.pose; let ax = .2, ay = 0, by = 0, tilt = 0;
@@ -2558,6 +2911,7 @@ function onBossDeath(e) {
 }
 function updateBossDeath(dt) {
   if (!bossDying) return; const b = bossDying, e = b.e; b.t += dt;
+  if (e.m.kk) { const p = KK_POSES[e.type].dying; e.m.anim.play(p[0], p[1]); e.m.anim.update(dt); }
   e.m.root.position.x = e.x + rnd(-.15, .15) * (1 - b.t / 2.4); e.m.root.position.z = e.z + rnd(-.15, .15);
   for (const mt of e.m.mats) mt.emissive.setRGB(b.t * 1.5, b.t * .8, b.t * .4);
   if (Math.random() < .5) FX.burst(e.x + rnd(-1.5, 1.5), rnd(1, 3.5), e.z + rnd(-1.5, 1.5), 8, { color: e.B.color, speed: 6, life: .6, size: .2 });
@@ -2633,6 +2987,7 @@ function centerFree() {
 function buildRoom(spec) {
   disposeRoom(); clearTransient();
   const type = spec.type;
+  if (type === 'shop') run.shopSeen = true;
   const choices = type === 'menu' ? [] : type === 'boss' ? (run.floor < BOSSES.length - 1 ? genChoices(1).map(c => ({ ...c, sub: BIOMES[run.floor + 1].sub + ' · ' + c.sub, descend: true })) : []) : genChoices(run.idx + 1);
   const g = genGrid({ type, doors: choices.length });
   room = { id: ++roomSeq, type, reward: spec.reward, W: g.W, H: g.H, grid: g.grid, doorCols: g.doorCols, mc: g.mc, choices, floor: run.floor, waves: [], waveIdx: -1, waveT: -1, cleared: false, startT: 0, braziers: [], doors: [], boss: null, obst: [], introT: 0 };
@@ -2711,21 +3066,21 @@ function exitThrough(d) {
   }
 }
 function spawnAltar(x, z, boost) {
-  const a = buildAltar(boost >= 1 ? 0xffb84a : 0xffc060); a.root.position.set(x, 0, z); room.group.add(a.root);
+  const a = ASSETS.ok ? buildChestAltar(boost >= 1) : buildAltar(boost >= 1 ? 0xffb84a : 0xffc060); a.root.position.set(x, 0, z); a.root.rotation.y = Math.PI; room.group.add(a.root);
   FX.burst(x, 1.5, z, 40, { color: 0xffc060, speed: 5, life: .8, up: 5 }); Rings.spawn(x, z, 3, 0xffc060, .5);
   room.obst.push({ x, z, r: .85 });
   const it = { x, z, r: 2.4, text: boost >= 1 ? 'Принять редкий дар' : 'Принять дар', used: false, a,
-    use() { if (this.used) return; openChoice(boost, () => { this.used = true; a.gem.visible = false; interact.splice(interact.indexOf(this), 1); FX.burst(x, 1.9, z, 30, { color: 0xffc060, speed: 4, life: .6 }); }); } };
+    use() { if (this.used) return; a.openT = a.openT || .001; SFX.door(); openChoice(boost, () => { this.used = true; a.gem.visible = false; interact.splice(interact.indexOf(this), 1); FX.burst(x, 1.9, z, 30, { color: 0xffc060, speed: 4, life: .6 }); }); } };
   interact.push(it);
 }
 function shopPrice(r) { return Math.round(({ common: 45, rare: 75, epic: 110, legend: 150 })[RELIC_BY_ID[r].rar] * (1 + run.floor * .15)); }
 function spawnShop() {
-  const mer = buildMerchant(); mer.root.position.set(0, 0, tileZ(2) + .6); room.group.add(mer.root); room.merchant = mer; room.obst.push({ x: 0, z: tileZ(2) + .6, r: 1.2 });
+  const mer = ASSETS.ok ? buildMerchantKK() : buildMerchant(); mer.root.position.set(0, 0, tileZ(2) + .6); room.group.add(mer.root); room.merchant = mer; room.obst.push({ x: 0, z: tileZ(2) + .6, r: 1.2 });
   const ids = rollRelics(3, .4), z = tileZ(5) + .6;
   const items = [...ids.map(id => ({ id })), { heal: true }];
   items.forEach((it, i) => {
     const x = (i - 1.5) * 4.4, color = it.heal ? 0xff5060 : RHEX[RELIC_BY_ID[it.id].rar];
-    const pd = buildPedestal(color); pd.root.position.set(x, 0, z); room.group.add(pd.root); room.obst.push({ x, z, r: .5 });
+    const pd = ASSETS.ok ? buildPedestalKK(color) : buildPedestal(color); pd.root.position.set(x, 0, z); room.group.add(pd.root); room.obst.push({ x, z, r: .5 });
     const price = it.heal ? Math.round(35 * (1 + run.floor * .15)) : shopPrice(it.id), name = it.heal ? 'Чаша пламени' : RELIC_BY_ID[it.id].name;
     const lbl = Labels.add(x, 2.5, z, `<b class="sm">${name}</b><small><span class="price">${price}</span> углей</small>`); lbl.el.style.maxWidth = '150px'; lbl.el.style.whiteSpace = 'normal';
     const obj = { x, z, r: 1.6, used: false, text: `Купить «${name}» — ${price}`, pd, lbl, price, item: it,
@@ -2834,7 +3189,7 @@ function goMenu() {
   const hb = buildBrazier(true); hb.root.position.set(0, 0, -1); room.group.add(hb.root); hb.coalMat.color.setRGB(5, 1.8, .4);
   room.braziers.push({ x: 0, z: -1, m: hb, lit: true, light: staticLights[0], flick: 0, healed: true }); menuHearth = hb;
   for (const [x, z] of [[-7, -5], [7, -5]]) { if (staticLights.length < 3) break; const b = buildBrazier(); b.root.position.set(x, 0, z); room.group.add(b.root); b.coalMat.color.setRGB(5, 1.8, .4); room.braziers.push({ x, z, m: b, lit: true, light: staticLights[room.braziers.length], flick: rnd(0, 9), healed: true }); }
-  P.x = 2.6; P.z = 1.6; P.face = angTo(P.x, P.z, 0, -1); P.vx = P.vz = 0; P.hp = 100; P.alive = true; P.atk.step = -1;
+  P.x = 2.4; P.z = 1.2; P.face = angTo(P.x, P.z, -3, 7); P.vx = P.vz = 0; P.hp = 100; P.alive = true; P.atk.step = -1;
   S = S || computeStats(); hero.root.visible = true; deathFade = 1;
   $('#hud').classList.add('hidden'); $('#touch').classList.remove('on'); document.body.classList.remove('ingame');
   Screens.show('title'); renderTitleStats(); Music.set('menu');
@@ -3081,7 +3436,7 @@ function updateCamera(rdt, t) {
   if (room && !camFocus) {
     const hw = D * tanf * aspect, hh = D * tanf * 1.1;
     const mx = Math.max(0, room.W * T / 2 - hw + 1.8), mz = Math.max(0, room.H * T / 2 - hh + 2.5);
-    tx = clamp(tx, -mx, mx); tz = clamp(tz, -mz + 1, mz + 1);
+    tx = clamp(tx, -mx, mx); tz = clamp(tz, -mz + 1, mz - 1.2);
   }
   cam.x = damp(cam.x, tx, camFocus ? 2.5 : 7, rdt); cam.z = damp(cam.z, tz, camFocus ? 2.5 : 7, rdt);
   trauma = Math.max(0, trauma - rdt * 1.6); const sh = trauma * trauma;
@@ -3094,10 +3449,10 @@ function updateLights(rdt, t) {
   if (state === 'dying' || state === 'dead') deathFade = damp(deathFade, 0, 1.2, rdt);
   const flick = .9 + .1 * Math.sin(t * 11.3) * Math.sin(t * 7.1 + 1) + rnd(-.02, .02);
   const lp = lanternPos(); lanternLight.position.set(lp.x, 2.3, lp.z);
-  const base = state === 'menu' ? 9 : (22 + 30 * hpK) * li;
+  const base = state === 'menu' ? 9 : (26 + 32 * hpK) * li;
   lanternLight.intensity = base * flick * (1 - darkK * .78) * deathFade;
   lanternLight.distance = (state === 'menu' ? 8 : (13 + 9 * hpK) * li);
-  hemi.intensity = biome.hemiI * (1 - darkK * .85); moon.intensity = .8 * (1 - darkK * .9);
+  hemi.intensity = biome.hemiI * HEMI_K() * (1 - darkK * .85); moon.intensity = (ASSETS.ok ? 1.1 : .8) * (1 - darkK * .9);
   GU.uDark.value = damp(GU.uDark.value, state === 'menu' ? .1 : (1 - hpK) * .5 + darkK * .7, 4, rdt);
   GU.uHurt.value = P.hurtT * .85; GU.uCA.value = damp(GU.uCA.value, P.hurtT * .8 + (timeScale < .5 ? .35 : 0), 6, rdt);
   GU.uFlash.value = damp(GU.uFlash.value, 0, 4.5, rdt); GU.uTime.value = t;
@@ -3105,7 +3460,36 @@ function updateLights(rdt, t) {
   if (hero) { const c = (4 + 5 * hpK) * flick * deathFade; hero.core.material.color.setRGB(c * 1.05, c * .72, c * .38); hero.halo.material.opacity = .28 * hpK * deathFade; }
   if (room?.sconces) for (const s of room.sconces) { s.fl.scale.set(.08, .28 * (.8 + .3 * Math.sin(t * 13 + s.root.position.x)), .08); if (Math.random() < .15) { const wp = s.fl.getWorldPosition(_v3); glowP.emit(wp.x, wp.y + .1, wp.z, rnd(-.1, .1), 1, rnd(-.1, .1), .5, .15, 0, 3, 1.4, .4, .9, 1, -1); } }
 }
+const _hv = new THREE.Vector3();
+function animateHeroKK(t, dt) {
+  const h = hero; h.root.position.set(P.x, 0, P.z); h.root.rotation.y = P.face;
+  P.castT = Math.max(0, (P.castT || 0) - dt);
+  const sp = Math.hypot(P.vx, P.vz), mv = state === 'menu' ? 0 : Math.min(1, sp / (S ? S.speed : 7));
+  let want = 'Idle', o = {};
+  if (state === 'menu') want = 'Sit_Floor_Idle';
+  else if (!P.alive || state === 'dying' || state === 'dead') { want = 'Death_A'; o = { once: true, dur: 1.3 }; }
+  else if (state === 'won' || state === 'victory') want = 'Cheer';
+  else if (P.dashT > 0) { want = 'Dodge_Forward'; o = { once: true, dur: .42, fade: .05 }; }
+  else if (P.atk.step >= 0) {
+    want = ['1H_Melee_Attack_Slice_Diagonal', '1H_Melee_Attack_Slice_Horizontal', '2H_Melee_Attack_Spin'][P.atk.step];
+    o = { once: true, dur: COMBO[P.atk.step].dur / S.atkSpd * (P.atk.step === 2 ? 1.25 : 1.6), fade: .05, restart: h.serial !== P.atkSerial }; h.serial = P.atkSerial;
+  }
+  else if (P.castT > 0 && (mv < .35 || P.castKind === 'flare')) { want = P.castKind === 'flare' ? 'Spellcast_Raise' : '1H_Ranged_Shoot'; o = { once: true, dur: P.castKind === 'flare' ? .6 : .4, fade: .05 }; }
+  else if (P.hurtT > .55) { want = 'Hit_A'; o = { once: true, dur: .35, fade: .05 }; }
+  else if (mv > .12) { want = 'Running_A'; o = { speed: .55 + mv * .7 }; }
+  h.anim.play(want, o); h.anim.update(state === 'menu' || state === 'victory' ? dt : dt * timeScale);
+  // the lantern hangs from the left hand but always swings upright
+  h.root.updateMatrixWorld(true);
+  if (h.handL) { h.handL.getWorldPosition(_hv); P.lx = _hv.x; P.lz = _hv.z; h.root.worldToLocal(_hv); h.lan.position.set(_hv.x, _hv.y - .2, _hv.z); }
+  const lx = P.vx * Math.cos(P.face) - P.vz * Math.sin(P.face), lz = P.vx * Math.sin(P.face) + P.vz * Math.cos(P.face);
+  h.lan.rotation.x = damp(h.lan.rotation.x, -clamp(lz / 8, -1, 1) * .5 + Math.sin(t * 2.3) * .08, 6, dt); h.lan.rotation.z = damp(h.lan.rotation.z, clamp(lx / 8, -1, 1) * .4 + Math.sin(t * 1.7) * .08, 6, dt);
+  const blink = P.inv > 0 && P.dashT <= 0 && P.hurtT > 0 && Math.floor(t * 18) % 2 === 0;
+  h.model.visible = !blink && (deathFade > .05 || state === 'dying');
+  if (P.dashT > 0 && Math.random() < .5) smokeP.emit(P.x, .6, P.z, 0, .3, 0, .4, .5, 1.2, .05, .04, .05, .45, 1, 0);
+  if (state === 'menu' && Math.random() < .3) { const lp = lanternPos(); glowP.emit(lp.x, .6, lp.z, 0, .4, 0, .5, .08, 0, 3, 1.6, .5, .7, 1, -.5); }
+}
 function animateHero(t, dt) {
+  if (hero.kk) return animateHeroKK(t, dt);
   const h = hero; h.root.position.set(P.x, 0, P.z);
   const sp = Math.hypot(P.vx, P.vz), mv = state === 'menu' ? 0 : Math.min(1, sp / (S ? S.speed : 7));
   let spin = 0; if (P.atk.step === 2) spin = easeOut(clamp(P.atk.t / (COMBO[2].dur * .7), 0, 1)) * TAU;
@@ -3140,10 +3524,12 @@ function animateRoom(t, dt) {
   if (!room) return;
   for (const d of room.doors) {
     if (d.open) { d.openT = Math.min(1, d.openT + dt * .9); }
-    d.mesh.gate.position.y = easeInOut(d.openT) * 3.5; d.mesh.portal.material.opacity = d.openT * .92;
-    if (d.emblem.visible) { d.emblem.position.y = 4.7 + Math.sin(t * 2 + d.x) * .15; d.emblem.userData.spin.rotation.y = t * 1.5; d.emblem.scale.setScalar(Math.min(1, d.openT * 2)); if (Math.random() < .4) { const [col] = EMBLEMS[d.reward.kind] || EMBLEMS.next; _col.set(col); glowP.emit(d.x + rnd(-.9, .9), rnd(.2, 3), d.z + .6, 0, rnd(.2, .8), rnd(.2, .6), 1, .12, 0, _col.r * 2.5, _col.g * 2.5, _col.b * 2.5, .8, .5, 0); } }
+    if (d.mesh.door) { d.mesh.door.rotation.y = easeInOut(d.openT) * 1.75; d.mesh.portal.material.opacity = d.openT * .35; }
+    else { d.mesh.gate.position.y = easeInOut(d.openT) * 3.5; d.mesh.portal.material.opacity = d.openT * .92; }
+    if (d.emblem.visible) { d.emblem.position.y = (d.mesh.door ? 4.3 : 4.7) + Math.sin(t * 2 + d.x) * .15; d.emblem.userData.spin.rotation.y = t * 1.5; d.emblem.scale.setScalar(Math.min(1, d.openT * 2)); if (Math.random() < .4) { const [col] = EMBLEMS[d.reward.kind] || EMBLEMS.next; _col.set(col); glowP.emit(d.x + rnd(-.9, .9), rnd(.2, 3), d.z + .6, 0, rnd(.2, .8), rnd(.2, .6), 1, .12, 0, _col.r * 2.5, _col.g * 2.5, _col.b * 2.5, .8, .5, 0); } }
   }
-  for (const it of interact) { if (it.a) { it.a.gem.position.y = 1.9 + Math.sin(t * 2) * .12; it.a.gem.rotation.y = t; it.a.ring.rotation.z = t * 1.3; if (Math.random() < .3) glowP.emit(it.x + rnd(-.4, .4), 1.5, it.z + rnd(-.4, .4), 0, 1.2, 0, .8, .1, 0, 3, 2, .8, .8, .5, -.5); } if (it.pd) { it.pd.gem.position.y = 1.6 + Math.sin(t * 2.4 + it.x) * .1; it.pd.gem.rotation.y = t * 1.4; } }
+  for (const it of interact) { if (it.a) { if (it.a.lid && it.a.openT) { it.a.openT = Math.min(1, it.a.openT + dt * 2.5); it.a.lid.rotation.x = -easeOut(it.a.openT) * 1.9; } it.a.gem.position.y = (it.a.lid ? 2.2 : 1.9) + Math.sin(t * 2) * .12 + (it.a.openT || 0) * .5; it.a.gem.rotation.y = t; it.a.ring.rotation.z = t * 1.3; if (Math.random() < .3) glowP.emit(it.x + rnd(-.4, .4), 1.5, it.z + rnd(-.4, .4), 0, 1.2, 0, .8, .1, 0, 3, 2, .8, .8, .5, -.5); } if (it.pd) { it.pd.gem.position.y = 1.6 + Math.sin(t * 2.4 + it.x) * .1; it.pd.gem.rotation.y = t * 1.4; } }
+  if (room.merchant?.anim) room.merchant.anim.update(dt || .016);
   if (room.merchant) room.merchant.lamps.forEach((l, i) => { l.rotation.z = Math.sin(t * 1.5 + i) * .15; });
   if (room.bonfire && Math.random() < .9) { const b = room.bonfire; glowP.emit(b.x + rnd(-.3, .3), .4, b.z + rnd(-.3, .3), rnd(-.2, .2), rnd(2, 3.5), rnd(-.2, .2), rnd(.5, .9), rnd(.4, .6), .05, 3.4, 1.4, .35, .9, 1, -1); }
 }
@@ -3194,7 +3580,7 @@ const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
 function warmup() {
   // Compile every shader variant up front so the first enemy / boss / effect never hitches.
   const g = new THREE.Group(); scene.add(g);
-  const models = [...Object.values(ENEMY_MODELS).map(f => f()), ...Object.values(BOSS_MODELS).map(f => f()), { root: buildAltar().root }, { root: buildPedestal(0xffffff).root }, { root: buildMerchant().root }, { root: buildBonfire().root }, { root: buildDoor().root }, { root: buildBanner(0x552222).root }];
+  const models = [...Object.values(ENEMY_MODELS).map(f => f()), ...Object.values(BOSS_MODELS).map(f => f()), ...(ASSETS.ok ? [...Object.keys(KK_ENEMY).map(buildEnemyKK), ...Object.keys(KK_BOSS).map(buildBossKK), buildMerchantKK(), buildChestAltar(true), buildPedestalKK(0xffffff)] : []), { root: buildAltar().root }, { root: buildPedestal(0xffffff).root }, { root: buildMerchant().root }, { root: buildBonfire().root }, { root: buildDoor().root }, { root: buildBanner(0x552222).root }];
   models.forEach((m, i) => { m.root.position.set((i % 6) * 3 - 8, 0, Math.floor(i / 6) * 3 - 4); g.add(m.root); });
   const tg = Tele.spawn({ x: 0, z: 0, r: 1, dur: .1 }); const sl = Slashes.spawn(0, 0, 0, 1, 2, 0xffffff); Rings.spawn(0, 0, 1, 0xffffff); addScorch(0, 0, 1); Beams.spawn(0, 0, 0, 2, 1, 0xffffff);
   renderer.compile(scene, camera); composer.render(.016);
@@ -3206,8 +3592,11 @@ async function boot() {
     bootStep(12, 'Ткём тьму…'); await nextFrame();
     buildMaterials(); bootStep(48, 'Высекаем камень…'); await nextFrame();
     buildSharedGeo(); FX.init(); Nums.init(); buildProjectileMeshes(); hydrateIcons();
-    hero = buildHero(); scene.add(hero.root);
-    bootStep(72, 'Раздуваем угли…'); await nextFrame();
+    bootStep(52, 'Призываем обитателей Бездны…');
+    try { await loadAssets(k => bootStep(52 + k * 38, 'Призываем обитателей Бездны… ' + Math.round(k * 100) + '%')); }
+    catch (err) { console.warn('3D assets unavailable, using procedural models:', err); ASSETS.ok = false; }
+    hero = ASSETS.ok ? buildHeroKK() : buildHero(); scene.add(hero.root);
+    bootStep(92, 'Раздуваем угли…'); await nextFrame();
     setupInput(); setupUI();
     S = computeStats(); goMenu();
     warmup(); bootStep(100, 'Готово');
