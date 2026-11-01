@@ -728,7 +728,7 @@ renderer.setPixelRatio(Q.pr);
 renderer.setSize(innerWidth, innerHeight, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 1.22;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -741,7 +741,7 @@ camera.position.set(0, 20, 12);
 const GradeShader = {
   uniforms: {
     tDiffuse: { value: null }, uTime: { value: 0 }, uRes: { value: new THREE.Vector2(innerWidth, innerHeight) },
-    uVig: { value: .42 }, uHurt: { value: 0 }, uCA: { value: 0 }, uDark: { value: 0 }, uFlash: { value: 0 }, uSat: { value: 1.05 }, uLift: { value: new THREE.Vector3(1, 1, 1) },
+    uVig: { value: .26 }, uHurt: { value: 0 }, uCA: { value: 0 }, uDark: { value: 0 }, uFlash: { value: 0 }, uSat: { value: 1.05 }, uLift: { value: new THREE.Vector3(1, 1, 1) },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
@@ -773,7 +773,7 @@ const GU = gradePass.uniforms;
 
 /* ---------- lights ---------- */
 const hemi = new THREE.HemisphereLight(0x3b4c5c, 0x0a0806, .7); scene.add(hemi);
-const moon = new THREE.DirectionalLight(0x8494b8, .8); moon.position.set(-8, 18, 6); scene.add(moon); scene.add(moon.target);
+const moon = new THREE.DirectionalLight(0x8494b8, .8); moon.position.set(-6, 22, 14); scene.add(moon); scene.add(moon.target);
 const lanternLight = new THREE.PointLight(0xffa04a, 30, 22, 1.25);
 lanternLight.castShadow = Q.shadows;
 lanternLight.shadow.mapSize.set(512, 512);
@@ -945,13 +945,13 @@ function buildMaterials() {
    BIOMES
    ===================================================================== */
 const BIOMES = [
-  { name: 'Затопленные Катакомбы', sub: 'Ярус I', flavor: 'Здесь тьма впервые научилась дышать водой', bg: 0x06090b, fog: 0x07100f, fogD: .022, floor: 0x8e9a98, wall: 0x7a8686, hemiS: 0x2c4a52, hemiG: 0x080b0c, hemiI: 1.35, moon: 0x7aa4c4, accent: 0x3fe0d0, eye: 0x7ff6ff, vein: 0x1aa8a0, veinI: 0, enemy: 0x18222a, bullet: 0x5ff0ff, lift: [.96, 1.02, 1.04], kk: { floor: 0x8d9ea0, wall: 0x93a4a8, prop: 0xa9b0ae, gear: 0xffffff } },
-  { name: 'Пепельные Кузни', sub: 'Ярус II', flavor: 'Горны, что ковали цепи для солнца', bg: 0x0b0605, fog: 0x140806, fogD: .024, floor: 0x8a7a70, wall: 0x705c52, hemiS: 0x4a2a1c, hemiG: 0x0c0605, hemiI: 1.25, moon: 0xc48a6a, accent: 0xff6a1f, eye: 0xffb060, vein: 0xff5a10, veinI: 1.15, enemy: 0x2a1a16, bullet: 0xff7a2a, lift: [1.05, 1, .94], kk: { floor: 0xa88a7a, wall: 0x9e8070, prop: 0xb69a88, gear: 0xffffff } },
-  { name: 'Сердце Тьмы', sub: 'Ярус III', flavor: 'Там, где свет — лишь воспоминание', bg: 0x07050b, fog: 0x0c0714, fogD: .026, floor: 0x6e687a, wall: 0x50485f, hemiS: 0x34264a, hemiG: 0x08060c, hemiI: 1.2, moon: 0x9a7ad0, accent: 0xb05cff, eye: 0xd8a0ff, vein: 0x8a3cff, veinI: .5, enemy: 0x1e1428, bullet: 0xc77bff, lift: [1, .97, 1.06], kk: { floor: 0x8b84a0, wall: 0x7d7596, prop: 0xa098b2, gear: 0xffffff } },
+  { name: 'Затопленные Катакомбы', sub: 'Ярус I', flavor: 'Здесь тьма впервые научилась дышать водой', bg: 0x06090b, fog: 0x07100f, fogD: .011, floor: 0x8e9a98, wall: 0x7a8686, hemiS: 0x9ab8c6, hemiG: 0x2e3436, hemiI: 1.35, moon: 0xb4cce0, accent: 0x3fe0d0, eye: 0x7ff6ff, vein: 0x1aa8a0, veinI: 0, enemy: 0x18222a, bullet: 0x5ff0ff, lift: [.96, 1.02, 1.04], kk: { floor: 0xb6c4c4, wall: 0xbac6c8, prop: 0xc8ccca, gear: 0xffffff } },
+  { name: 'Пепельные Кузни', sub: 'Ярус II', flavor: 'Горны, что ковали цепи для солнца', bg: 0x0b0605, fog: 0x140806, fogD: .012, floor: 0x8a7a70, wall: 0x705c52, hemiS: 0xc4a08c, hemiG: 0x3a2a24, hemiI: 1.3, moon: 0xe8c0a4, accent: 0xff6a1f, eye: 0xffb060, vein: 0xff5a10, veinI: 1.15, enemy: 0x2a1a16, bullet: 0xff7a2a, lift: [1.05, 1, .94], kk: { floor: 0xcaa898, wall: 0xc0a08e, prop: 0xceb4a2, gear: 0xffffff } },
+  { name: 'Сердце Тьмы', sub: 'Ярус III', flavor: 'Там, где свет — лишь воспоминание', bg: 0x07050b, fog: 0x0c0714, fogD: .013, floor: 0x6e687a, wall: 0x50485f, hemiS: 0xa898c8, hemiG: 0x2e2838, hemiI: 1.3, moon: 0xc4b0e8, accent: 0xb05cff, eye: 0xd8a0ff, vein: 0x8a3cff, veinI: .5, enemy: 0x1e1428, bullet: 0xc77bff, lift: [1, .97, 1.06], kk: { floor: 0xb0a8c4, wall: 0xa69ebc, prop: 0xbeb6ce, gear: 0xffffff } },
 ];
-const MENU_BIOME = { ...BIOMES[0], bg: 0x060505, fog: 0x0b0806, fogD: .03, floor: 0x7a726a, wall: 0x645a52, hemiS: 0x3a2c22, hemiG: 0x080605, hemiI: .55, moon: 0x8a7a6a, accent: 0xff9a3c, vein: 0xff6a1a, veinI: .5, lift: [1.04, 1, .95], kk: { floor: 0xa38f7c, wall: 0x998474, prop: 0xb39c88, gear: 0xffffff } };
+const MENU_BIOME = { ...BIOMES[0], bg: 0x060505, fog: 0x0b0806, fogD: .018, floor: 0x7a726a, wall: 0x645a52, hemiS: 0x8a7462, hemiG: 0x1c1610, hemiI: .8, moon: 0xb09a86, accent: 0xff9a3c, vein: 0xff6a1a, veinI: .5, lift: [1.04, 1, .95], kk: { floor: 0xc4ae98, wall: 0xb8a28e, prop: 0xc8b29e, gear: 0xffffff } };
 let biome = BIOMES[0];
-const HEMI_K = () => ASSETS.ok ? 1.6 : 1;
+const HEMI_K = () => 1;
 function applyBiome(b) {
   biome = b; tintEnv(b);
   scene.background.set(b.bg); scene.fog.color.set(b.fog); scene.fog.density = b.fogD;
@@ -3451,9 +3451,9 @@ function updateLights(rdt, t) {
   const lp = lanternPos(); lanternLight.position.set(lp.x, 2.3, lp.z);
   const base = state === 'menu' ? 9 : (26 + 32 * hpK) * li;
   lanternLight.intensity = base * flick * (1 - darkK * .78) * deathFade;
-  lanternLight.distance = (state === 'menu' ? 8 : (13 + 9 * hpK) * li);
-  hemi.intensity = biome.hemiI * HEMI_K() * (1 - darkK * .85); moon.intensity = (ASSETS.ok ? 1.1 : .8) * (1 - darkK * .9);
-  GU.uDark.value = damp(GU.uDark.value, state === 'menu' ? .1 : (1 - hpK) * .5 + darkK * .7, 4, rdt);
+  lanternLight.distance = (state === 'menu' ? 8 : (16 + 10 * hpK) * li);
+  hemi.intensity = biome.hemiI * HEMI_K() * (1 - darkK * .85); moon.intensity = (state === 'menu' ? .6 : 1.7) * (1 - darkK * .9);
+  GU.uDark.value = damp(GU.uDark.value, state === 'menu' ? .1 : (1 - hpK) * .22 + darkK * .7, 4, rdt);
   GU.uHurt.value = P.hurtT * .85; GU.uCA.value = damp(GU.uCA.value, P.hurtT * .8 + (timeScale < .5 ? .35 : 0), 6, rdt);
   GU.uFlash.value = damp(GU.uFlash.value, 0, 4.5, rdt); GU.uTime.value = t;
   GU.uSat.value = damp(GU.uSat.value, timeScale < .5 ? .6 : 1.05, 6, rdt);
